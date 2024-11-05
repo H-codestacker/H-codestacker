@@ -11,57 +11,61 @@ using std::string;
 string parentDir;
 string locIndex = "/tmp/disk_analize_index.txt";
 string locData = "/tmp/disk_analize_data.txt";
-string locSort = "/tmp/disk_analize_sort2.txt";
+string locSort = "/tmp/disk_analize_sort.txt";
 
-std::string line;
 int fl_fileOutSize = 40;
 
-std::vector<string> files;
-int entries=0;
-long* dataStart=0;
-long* dataEnd=0;
-int* sorted=0;
-std::vector<long> spaceS, spaceE, spaceSize;
+struct FileData {
+	string name;
+	long start, end;
+};
+struct FileSpace {
+	long start, end;
+	long size;
+};
+FileData* files;
+FileSpace* spaces;
+int* sortedFiles;
+int sectorCount;
+int entries;
 
-bool procArgs(int argS, const char* args[]);	// Process every arg passed
+int procArgs(int argS, const char* args[]);	// Process every arg passed
 bool readIndex();								// Reads the file with the index, returns if succeded
 void index(string path);						// Indexes every file in the given path, and attempts saving it
 void analize();									// Analizes where does the file starts and ends with hdparm --fibmap
-int* sort(int size, long* data, int*& indexes);	// Generates a sorted index of the data
+int* sort();									// Generates a sorted index of the data
 void identifySpace();							// With the sorted data, it can identify where unused sectors in the disk
-void defragment();								// TODO: Defragments the data, ONLY suggestions on what to do.
+void defragment(bool simple);					// TODO: Defragments the data, ONLY suggestions on what to do.
 
 string exec(string command);
 
 int main(int argS, const char* args[]){
-	if (!procArgs(argS, args)) { return -1; }
+	int ret = procArgs(argS, args);
+	if (ret != 0) { return ret; }
 	fl_fileOutSize = std::stoi(exec("tput cols"));
 
 	printf("Indexing...\r");
 	if(!readIndex()) { index(parentDir); }
-
-	dataStart = (long*) calloc(entries, sizeof(long));
-	dataEnd = (long*) calloc(entries, sizeof(long));
 
 	printf("Analizing...\r");
 	analize();
 	printf("Analisis Completed! 100%%\e[K\n");
 
 	printf("Sorting... \r");
-	sort(entries, dataStart, sorted);
+	sortedFiles = sort();
 	printf("Finished sorting!       \n");
 
 	printf("Searching for empty space... \r");
 	identifySpace();
 
-	defragment();
+	defragment(true);
 	
-	free(sorted); free(dataEnd); free(dataStart);
+	free(sortedFiles); free(files); free(spaces);
 	return 0;
 }
 
-bool procArgs(int argS, const char* args[]){
-	if (argS <= 1) { return false; }
+int procArgs(int argS, const char* args[]){
+	if (argS <= 1) { return 1; }
 	string refresh("-r");
 	string version("-v");
 	string help("--help");
@@ -73,40 +77,46 @@ bool procArgs(int argS, const char* args[]){
 			fs::remove(locSort);
 		} else
 		if(version == args[i]){
-			printf(" | mini defragmenter.cpp - Version 0.5.5\n");
-			return false;
+			printf(" | mini defragmenter.cpp - Version 0.6.5\n");
+			return 0;
 		} else
 		if(help == args[i]){
 			printf("No."); // TODO: Be polite
-			return false;
+			return 0;
 		}
 	}
 	parentDir = args[argS - 1];
-	return true;
+	return 0;
 }
 
 bool readIndex(){
-	int i=0;
-	entries=0;
 	if(!fs::exists(locIndex)){return false;}
-	std::ifstream file(locIndex);
 
+	int i=0;
+	std::ifstream file(locIndex);
+	std::vector<string> filesStr;
+	string line;
     while (std::getline(file, line)) {
+		filesStr.push_back(line);
 		i++;
         printf("Indexing: %i files...\r", i);
-		files.push_back(line);
     }
-	printf("Indexed: %i files!   \n", i);
 	entries = i;
+
+	files = (FileData*) calloc(entries, sizeof(FileData));
+	for(i=0; i<entries; i++){
+		files[i].name = filesStr[i];
+	}
+	printf("Indexed: %i files!   \n", entries);
 
 	return true;
 }
 
-void index_(string dir){
+void index_(string dir, std::vector<string>& files){
 	const char* dirName = dir.c_str();
 	for (const fs::directory_entry & entry : fs::directory_iterator(dir)) {
 		if(entry.is_directory()){
-			index_(entry.path());
+			index_(entry.path(), files);
 			continue;
 		}
         printf("Indexing: %i files, at: %.*s\r", entries, fl_fileOutSize, dirName);
@@ -116,12 +126,18 @@ void index_(string dir){
 }
 void index(string dir){
 	entries=0;
-	index_(dir);
+	std::vector<string> filesStr;
+	index_(dir, filesStr);
 	std::ofstream out(locIndex);
-	if(!out.good()) { printf("Indexed: %i files! (Not Saved...)\e[K\n", entries); return; }
 
+	files = (FileData*) calloc(entries, sizeof(FileData));
+	for(int i=0; i<entries; i++){
+		files[i].name = filesStr[i];
+	}
+
+	if(!out.good()) { printf("Indexed: %i files! (Not Saved...)\e[K\n", entries); return; }
     for(int i=0; i<entries; i++){
-		out << files[i] << "\n";
+		out << filesStr[i] << "\n";
 	}
     out.close();
 	printf("Indexed: %i files! (Saved)\e[K\n", entries);
@@ -129,25 +145,26 @@ void index(string dir){
 
 void analize(){
 	std::ifstream savedDataI(locData);
-	int i=0, it=0;
+	int i=0;
+	string line;
     while (std::getline(savedDataI, line)) {
-		dataStart[i]	= std::stol(line.substr(0, line.find(" ")));
-		dataEnd[i]		= std::stol(line.substr(line.find(" ")+1));
+		files[i].start	= std::stol(line.substr(0, line.find(" ")));
+		files[i].end	= std::stol(line.substr(line.find(" ")+1));
 		i++;
         printf("Reading saved data: %i/%i\r", i, entries);
     }
-	if(i!=0) { printf("Read saved data %i/%i    \n", i, entries); }
+	if(i!=0) { printf("Read saved data: %i/%i   \n", i, entries); }
 
 	std::ofstream savedDataO(locData);
 	for (; i<entries; i++){
-		if(!fs::exists(files[i])) {
-			dataStart[i] = 0; dataEnd[i] = 0;
+		if(!fs::exists(files[i].name)) {
+			files[i].start = 0; files[i].end = 0;
 			savedDataO << "0 0\n";
 			continue;
 		}
-		printf("Analising [%i/%i] %.*s \e[K\r", i, entries, fl_fileOutSize, files[i].c_str());
+		printf("Analising [%i/%i] %.*s \e[K\r", i, entries, fl_fileOutSize, files[i].name.c_str());
 
-		string out = exec(string("sudo hdparm --fibmap \"") + files[i] + "\"");
+		string out = exec(string("sudo hdparm --fibmap \"") + files[i].name + "\"");
 		out = out.substr(out.find("sectors", out.find("sectors")+1)+8);
 		int firstInd	= out.find_first_not_of(" ");
 		int secondInd	= out.find_first_not_of(" ", out.find(" ", firstInd));
@@ -155,38 +172,37 @@ void analize(){
 		string secondVal= out.substr(secondInd, out.find(" ", secondInd)-secondInd);
 		string thirdVal = out.substr(thirdInd, out.find(" ", thirdInd)-thirdInd);
 		if(secondVal == "-") { savedDataO << "0 0\n"; continue; }
-		dataStart[i]	= std::stol(secondVal);
-		dataEnd[i]		= std::stol(thirdVal);
+		files[i].start	= std::stol(secondVal);
+		files[i].end	= std::stol(thirdVal);
 		savedDataO << secondVal << " " << thirdVal << "\n";
 	}
 	savedDataO.close();
-
-	entries = i;
 }
 
-int* sort(int size, long* data_, int*& indexes){
-	indexes = (int*)calloc(size, sizeof(int));
+int* sort(){
+	int size = entries;
+	int* sortedFiles = (int*)calloc(size, sizeof(int));
 	if (fs::exists(locSort)){
 		std::ifstream file(locSort);
 		int i=0;
+		string line;
   		while (std::getline(file, line)) {
-			indexes[i] = std::stoi(line);
+			sortedFiles[i] = std::stoi(line);
 			i++;
 			printf("Sorting %i remaining \r", size);
     	}
 		entries=i;
-		return indexes;
+		return sortedFiles;
 	}
 	long* data = (long*)calloc(size, sizeof(long));
-	memcpy(data, data_, size*sizeof(long));
 
 	for (int i=0; i<size; i++){
-		indexes[i]=i;
+		sortedFiles[i]=i;
+		data[i]=files[i].start;
 		while(data[i] == 0){
 			size--;
-			data[i]=data[size];
-			data[size]=1;
-			indexes[i]=size;
+			data[i]=files[size].start;
+			sortedFiles[i]=size;
 			if(i==size){break;}
 		}
 	}
@@ -204,9 +220,9 @@ int* sort(int size, long* data_, int*& indexes){
 				greatestInd = i;
 			}
 		}
-		greatest = indexes[greatestInd];
-		indexes[greatestInd] = indexes[size];
-		indexes[size] = greatest;
+		greatest = sortedFiles[greatestInd];
+		sortedFiles[greatestInd] = sortedFiles[size];
+		sortedFiles[size] = greatest;
 		data[greatestInd] = data[size];
 		
 		size--;
@@ -214,33 +230,38 @@ int* sort(int size, long* data_, int*& indexes){
 
 	std::ofstream file(locSort);
 	for(int i=0; i<entries; i++){
-		file << indexes[i] << "\n";
+		file << sortedFiles[i] << "\n";
 	}
 	
 	file.close();
 	free(data);
-	return indexes;
+	return sortedFiles;
 }
 
 void identifySpace(){
-	int lastEnd = 1;
+	int lastEnd = 1, count = 0;
+	spaces = (FileSpace*) calloc(entries, sizeof(FileSpace));
 	for(int i; i<entries; i++){
-		if(dataStart[i] > lastEnd){
-			spaceS.push_back(lastEnd);
-			spaceE.push_back(dataStart[i]);
-			spaceSize.push_back(dataStart[i] - lastEnd);
+		if(files[i].start > lastEnd){
+			spaces[count].start = lastEnd;
+			spaces[count].end = files[i].start;
+			spaces[count].size = files[i].start - lastEnd;
+			count++;
 		}
-		lastEnd = dataEnd[i];
+		lastEnd = files[i].end;
 	}
-	int sectorCount=234412032;
+	
+	string sectorCountStr = exec(string("df -P \"" + parentDir + "\""));
+	sectorCountStr = sectorCountStr.substr(sectorCountStr.find("\n")+1);
 	if(lastEnd != sectorCount){
-		spaceS.push_back(lastEnd);
-		spaceE.push_back(sectorCount);
-		spaceSize.push_back(sectorCount - lastEnd);
+		spaces[count].start = lastEnd;
+		spaces[count].end = sectorCount;
+		spaces[count].size = sectorCount - lastEnd;
+		count++;
 	}
 }
 
-void defragment(bool simple, void* arg){
+void defragment(bool simple){
 	// TODO
 	if(simple){ // Searches for spaces of size above the threshold, and finds the next biggest fitting file
 		return;
@@ -248,6 +269,7 @@ void defragment(bool simple, void* arg){
 }
 
 string exec(string command){
+	// TODO: add a single command check (sanitizer)
 	char buffer[256];
     std::string result = "";
     FILE* pipe = popen(command.c_str(), "r");
