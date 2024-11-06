@@ -9,9 +9,7 @@ namespace fs = std::filesystem;
 using std::string;
 
 string parentDir;
-string locIndex = "/tmp/disk_analize_index.txt";
-string locData = "/tmp/disk_analize_data.txt";
-string locSort = "/tmp/disk_analize_sort.txt";
+string cacheLoc = "/tmp/disk_analize_<>.txt";
 
 int fl_fileOutSize = 40;
 
@@ -29,7 +27,7 @@ int* sortedFiles;
 int sectorCount;
 int entries;
 
-int procArgs(int argS, const char* args[]);	// Process every arg passed
+bool procArgs(int argS, const char* args[]);	// Process every arg passed, true = exit
 bool readIndex();								// Reads the file with the index, returns if succeded
 void index(string path);						// Indexes every file in the given path, and attempts saving it
 void analize();									// Analizes where does the file starts and ends with hdparm --fibmap
@@ -38,10 +36,10 @@ void identifySpace();							// With the sorted data, it can identify where unuse
 void defragment(bool simple);					// TODO: Defragments the data, ONLY suggestions on what to do.
 
 string exec(string command);
+string replace(string& str, const char* from, const char* to);
 
 int main(int argS, const char* args[]){
-	int ret = procArgs(argS, args);
-	if (ret != 0) { return ret; }
+	if (procArgs(argS, args)) { return 0; }
 	fl_fileOutSize = std::stoi(exec("tput cols"));
 
 	printf("Indexing...\r");
@@ -55,7 +53,6 @@ int main(int argS, const char* args[]){
 	sortedFiles = sort();
 	printf("Finished sorting!       \n");
 
-	printf("Searching for empty space... \r");
 	identifySpace();
 
 	defragment(true);
@@ -64,36 +61,45 @@ int main(int argS, const char* args[]){
 	return 0;
 }
 
-int procArgs(int argS, const char* args[]){
-	if (argS <= 1) { return 1; }
+bool procArgs(int argS, const char* args[]){
+	// True == exit
+	if (argS <= 1) { return true; }
 	string refresh("-r");
 	string version("-v");
+	string output("-o");
 	string help("--help");
 
 	for(int i=1; i < argS; i++){
 		if(refresh == args[i]){
-			fs::remove(locIndex);
-			fs::remove(locData);
-			fs::remove(locSort);
+			fs::remove(replace(cacheLoc, "<>", "index"));
+			fs::remove(replace(cacheLoc, "<>", "data"));
+			fs::remove(replace(cacheLoc, "<>", "sort"));
 		} else
 		if(version == args[i]){
-			printf(" | mini defragmenter.cpp - Version 0.6.5\n");
-			return 0;
+			printf(" | mini-defragmenter.cpp - Version 0.7.5\n");
+			return true;
 		} else
 		if(help == args[i]){
 			printf("No."); // TODO: Be polite
-			return 0;
+			return true;
+		} else
+		if(output == args[i]){
+			if((i+1) == argS){ return true; }
+			cacheLoc = string(args[i+1]);
+			if(fs::is_directory(cacheLoc)){
+				cacheLoc += "/disk_analize_<>.txt";
+			} else if(cacheLoc.find("<>") == -1) { return true; }
 		}
 	}
 	parentDir = args[argS - 1];
-	return 0;
+	return false;
 }
 
 bool readIndex(){
-	if(!fs::exists(locIndex)){return false;}
+	if(!fs::exists(replace(cacheLoc, "<>", "index"))){return false;}
 
 	int i=0;
-	std::ifstream file(locIndex);
+	std::ifstream file(replace(cacheLoc, "<>", "index"));
 	std::vector<string> filesStr;
 	string line;
     while (std::getline(file, line)) {
@@ -128,7 +134,7 @@ void index(string dir){
 	entries=0;
 	std::vector<string> filesStr;
 	index_(dir, filesStr);
-	std::ofstream out(locIndex);
+	std::ofstream out(replace(cacheLoc, "<>", "index"));
 
 	files = (FileData*) calloc(entries, sizeof(FileData));
 	for(int i=0; i<entries; i++){
@@ -144,7 +150,7 @@ void index(string dir){
 }
 
 void analize(){
-	std::ifstream savedDataI(locData);
+	std::ifstream savedDataI(replace(cacheLoc, "<>", "data"));
 	int i=0;
 	string line;
     while (std::getline(savedDataI, line)) {
@@ -155,7 +161,7 @@ void analize(){
     }
 	if(i!=0) { printf("Read saved data: %i/%i   \n", i, entries); }
 
-	std::ofstream savedDataO(locData);
+	std::ofstream savedDataO(replace(cacheLoc, "<>", "data"));
 	for (; i<entries; i++){
 		if(!fs::exists(files[i].name)) {
 			files[i].start = 0; files[i].end = 0;
@@ -182,8 +188,8 @@ void analize(){
 int* sort(){
 	int size = entries;
 	int* sortedFiles = (int*)calloc(size, sizeof(int));
-	if (fs::exists(locSort)){
-		std::ifstream file(locSort);
+	if (fs::exists(replace(cacheLoc, "<>", "sort"))){
+		std::ifstream file(replace(cacheLoc, "<>", "sort"));
 		int i=0;
 		string line;
   		while (std::getline(file, line)) {
@@ -228,7 +234,7 @@ int* sort(){
 		size--;
 	}
 
-	std::ofstream file(locSort);
+	std::ofstream file(replace(cacheLoc, "<>", "sort"));
 	for(int i=0; i<entries; i++){
 		file << sortedFiles[i] << "\n";
 	}
@@ -240,6 +246,14 @@ int* sort(){
 
 void identifySpace(){
 	int lastEnd = 1, count = 0;
+	int small=0, medium=0, large=0, smallS, mediumS;
+	string diskStr = exec(string("df -P \"" + parentDir + "\""));
+	diskStr = diskStr.substr(diskStr.find("\n")+1);
+	diskStr = diskStr.substr(0, diskStr.find(" "));
+
+	printf("\nDisk %s, partition %i. Has %i sectors\n", );
+
+	printf("Searching for empty space... \r");
 	spaces = (FileSpace*) calloc(entries, sizeof(FileSpace));
 	for(int i; i<entries; i++){
 		if(files[i].start > lastEnd){
@@ -247,18 +261,19 @@ void identifySpace(){
 			spaces[count].end = files[i].start;
 			spaces[count].size = files[i].start - lastEnd;
 			count++;
+			printf("Found %i empty spaces...\r", count);
 		}
 		lastEnd = files[i].end;
 	}
 	
-	string sectorCountStr = exec(string("df -P \"" + parentDir + "\""));
-	sectorCountStr = sectorCountStr.substr(sectorCountStr.find("\n")+1);
 	if(lastEnd != sectorCount){
 		spaces[count].start = lastEnd;
 		spaces[count].end = sectorCount;
 		spaces[count].size = sectorCount - lastEnd;
 		count++;
 	}
+	printf("Empty space Identified! %i spaces, of which...\n", count);
+	printf(" %i are insignificant \t\t %i of normal size and \t\t %i ar large", count);
 }
 
 void defragment(bool simple){
@@ -268,6 +283,11 @@ void defragment(bool simple){
 	}
 }
 
+string replace(string& str, const char* from, const char* to){
+	string newStr = str;
+	newStr.replace(str.find(from), strlen(from), to);
+	return newStr;
+}
 string exec(string command){
 	// TODO: add a single command check (sanitizer)
 	char buffer[256];
