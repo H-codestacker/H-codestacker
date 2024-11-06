@@ -76,7 +76,7 @@ bool procArgs(int argS, const char* args[]){
 			fs::remove(replace(cacheLoc, "<>", "sort"));
 		} else
 		if(version == args[i]){
-			printf(" | mini-defragmenter.cpp - Version 0.7.5\n");
+			printf(" | mini-defragmenter.cpp - Version 0.7.6\n");
 			return true;
 		} else
 		if(help == args[i]){
