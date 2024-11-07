@@ -24,7 +24,7 @@ struct FileSpace {
 FileData* files;
 FileSpace* spaces;
 int* sortedFiles;
-int sectorCount;
+long sectorCount;
 int entries;
 
 bool procArgs(int argS, const char* args[]);	// Process every arg passed, true = exit
@@ -51,7 +51,7 @@ int main(int argS, const char* args[]){
 
 	printf("Sorting... \r");
 	sortedFiles = sort();
-	printf("Finished sorting!       \n");
+	printf("Finished sorting! %i values\n", entries);
 
 	identifySpace();
 
@@ -76,7 +76,7 @@ bool procArgs(int argS, const char* args[]){
 			fs::remove(replace(cacheLoc, "<>", "sort"));
 		} else
 		if(version == args[i]){
-			printf(" | mini-defragmenter.cpp - Version 0.7.6\n");
+			printf(" | mini-defragmenter.cpp - Version 0.8.0\n");
 			return true;
 		} else
 		if(help == args[i]){
@@ -182,6 +182,7 @@ void analize(){
 		files[i].end	= std::stol(thirdVal);
 		savedDataO << secondVal << " " << thirdVal << "\n";
 	}
+	exec("sudo -k");
 	savedDataO.close();
 }
 
@@ -195,7 +196,7 @@ int* sort(){
   		while (std::getline(file, line)) {
 			sortedFiles[i] = std::stoi(line);
 			i++;
-			printf("Sorting %i remaining \r", size);
+			printf("Sorted %i entries...\r", size);
     	}
 		entries=i;
 		return sortedFiles;
@@ -246,34 +247,50 @@ int* sort(){
 
 void identifySpace(){
 	int lastEnd = 1, count = 0;
-	int small=0, medium=0, large=0, smallS, mediumS;
 	string diskStr = exec(string("df -P \"" + parentDir + "\""));
 	diskStr = diskStr.substr(diskStr.find("\n")+1);
 	diskStr = diskStr.substr(0, diskStr.find(" "));
+	string sectorCountStr = exec(string("sudo -S fdisk " + diskStr + " -l; sudo -k"));
+	sectorCountStr = sectorCountStr.substr(sectorCountStr.find("bytes, ") + 7);
+	sectorCount = std::stol(sectorCountStr.substr(0, sectorCountStr.find("\n")));
+	int partitionInd = diskStr.find_last_not_of("0123456789")+1;
 
-	printf("\nDisk %s, partition %i. Has %i sectors\n", );
+	printf("Disk %s, partition %s. Has %li sectors.\n",
+		diskStr.substr(0,partitionInd).c_str(), diskStr.substr(partitionInd).c_str(), sectorCount);
 
 	printf("Searching for empty space... \r");
+	int small=0, medium=0, large=0, dlarge=0, smallS, mediumS, largeS;
+	smallS = sectorCount / 10000;	// 100GB -> 10mb
+	mediumS = sectorCount / 100;	// 100GB -> 1GB
+	largeS = sectorCount / 20;		// 100GB -> 5GB
+
 	spaces = (FileSpace*) calloc(entries, sizeof(FileSpace));
-	for(int i; i<entries; i++){
+	for(int i=0; i<entries; i++){
 		if(files[i].start > lastEnd){
 			spaces[count].start = lastEnd;
 			spaces[count].end = files[i].start;
 			spaces[count].size = files[i].start - lastEnd;
+
+			if(spaces[count].size < smallS){ small++; }
+			else if(spaces[count].size < mediumS){ medium++; }
+			else if(spaces[count].size < largeS){ large++; }
+			else{ dlarge++; }
+
 			count++;
 			printf("Found %i empty spaces...\r", count);
 		}
 		lastEnd = files[i].end;
 	}
-	
 	if(lastEnd != sectorCount){
 		spaces[count].start = lastEnd;
 		spaces[count].end = sectorCount;
 		spaces[count].size = sectorCount - lastEnd;
 		count++;
 	}
-	printf("Empty space Identified! %i spaces, of which...\n", count);
-	printf(" %i are insignificant \t\t %i of normal size and \t\t %i ar large", count);
+	
+	printf("There are %i empty spaces, of which...\n", count);
+	printf(" \e[1m%i\e[0m are insignificant | \e[1m%i\e[0m of a normal size | and \e[1m%i\e[0m ar large"
+								" | but \e[1m%i\e[0m are deadly large!\n", small, medium, large, dlarge);
 }
 
 void defragment(bool simple){
