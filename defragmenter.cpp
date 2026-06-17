@@ -31,12 +31,14 @@ bool procArgs(int argS, const char* args[]);	// Process every arg passed, true =
 bool readIndex();								// Reads the file with the index, returns if succeded
 void index(string path);						// Indexes every file in the given path, and attempts saving it
 void analize();									// Analizes where does the file starts and ends with hdparm --fibmap
-int* sort();									// Generates a sorted index of the data
+void sortFiles();								// Generates a sorted index of the data
+void getDiskData();								// Gets data about the disk, sectorCount, etc...
 void identifySpace();							// With the sorted data, it can identify where unused sectors in the disk
 void defragment(bool simple);					// TODO: Defragments the data, ONLY suggestions on what to do.
 
 string exec(string command);
 string replace(string& str, const char* from, const char* to);
+int* sort(long* data, int*& sortedFiles, int size, const char* cache); 
 
 int main(int argS, const char* args[]){
 	if (procArgs(argS, args)) { return 0; }
@@ -50,9 +52,10 @@ int main(int argS, const char* args[]){
 	printf("Analisis Completed! 100%%\e[K\n");
 
 	printf("Sorting... \r");
-	sortedFiles = sort();
+	sortFiles();
 	printf("Finished sorting! %i values\n", entries);
 
+	getDiskData();
 	identifySpace();
 
 	defragment(true);
@@ -76,7 +79,7 @@ bool procArgs(int argS, const char* args[]){
 			fs::remove(replace(cacheLoc, "<>", "sort"));
 		} else
 		if(version == args[i]){
-			printf(" | mini-defragmenter.cpp - Version 0.8.0\n");
+			printf(" | mini-defragmenter.cpp - Version 0.8.5\n");
 			return true;
 		} else
 		if(help == args[i]){
@@ -186,23 +189,10 @@ void analize(){
 	savedDataO.close();
 }
 
-int* sort(){
+void sortFiles(){
 	int size = entries;
-	int* sortedFiles = (int*)calloc(size, sizeof(int));
-	if (fs::exists(replace(cacheLoc, "<>", "sort"))){
-		std::ifstream file(replace(cacheLoc, "<>", "sort"));
-		int i=0;
-		string line;
-  		while (std::getline(file, line)) {
-			sortedFiles[i] = std::stoi(line);
-			i++;
-			printf("Sorted %i entries...\r", size);
-    	}
-		entries=i;
-		return sortedFiles;
-	}
 	long* data = (long*)calloc(size, sizeof(long));
-
+	sortedFiles = (int*)calloc(size, sizeof(int));
 	for (int i=0; i<size; i++){
 		sortedFiles[i]=i;
 		data[i]=files[i].start;
@@ -213,40 +203,21 @@ int* sort(){
 			if(i==size){break;}
 		}
 	}
-	entries = size;
-	size--;
-	
-	while (size != 0){
-		printf("Sorting %i remaining \r", size);
-		int greatestInd = 0;
-		long greatest = data[0];
-
-		for (int i=0; i <= size; i++){
-			if(data[i] > greatest){
-				greatest = data[i];
-				greatestInd = i;
-			}
-		}
-		greatest = sortedFiles[greatestInd];
-		sortedFiles[greatestInd] = sortedFiles[size];
-		sortedFiles[size] = greatest;
-		data[greatestInd] = data[size];
-		
-		size--;
-	}
-
-	std::ofstream file(replace(cacheLoc, "<>", "sort"));
-	for(int i=0; i<entries; i++){
-		file << sortedFiles[i] << "\n";
-	}
-	
-	file.close();
-	free(data);
-	return sortedFiles;
+	sort(data, sortedFiles, size, "sort");
 }
 
-void identifySpace(){
-	int lastEnd = 1, count = 0;
+void getDiskData(){
+	if(fs::exists(replace(cacheLoc, "<>", "disk"))){
+		std::ifstream in(replace(cacheLoc, "<>", "disk"));
+		string disk, partitionStr, sectorCountStr;
+		std::getline(in, disk);
+		std::getline(in, partitionStr);
+		std::getline(in, sectorCountStr);
+		sectorCount = std::stol(sectorCountStr);
+		printf("Disk %s, partition %s. Has %li sectors.\n",
+			disk.c_str(), partitionStr.c_str(), sectorCount);
+		return;
+	}
 	string diskStr = exec(string("df -P \"" + parentDir + "\""));
 	diskStr = diskStr.substr(diskStr.find("\n")+1);
 	diskStr = diskStr.substr(0, diskStr.find(" "));
@@ -255,31 +226,38 @@ void identifySpace(){
 	sectorCount = std::stol(sectorCountStr.substr(0, sectorCountStr.find("\n")));
 	int partitionInd = diskStr.find_last_not_of("0123456789")+1;
 
+	std::ofstream out(replace(cacheLoc, "<>", "disk"));
+	out << diskStr.substr(0,partitionInd) << "\n" << diskStr.substr(partitionInd) << "\n" << sectorCount;
 	printf("Disk %s, partition %s. Has %li sectors.\n",
 		diskStr.substr(0,partitionInd).c_str(), diskStr.substr(partitionInd).c_str(), sectorCount);
+}
 
+void identifySpace(){
+	long lastEnd = 1;
+	int count = 0;
 	printf("Searching for empty space... \r");
-	int small=0, medium=0, large=0, dlarge=0, smallS, mediumS, largeS;
-	smallS = sectorCount / 10000;	// 100GB -> 10mb
-	mediumS = sectorCount / 100;	// 100GB -> 1GB
-	largeS = sectorCount / 20;		// 100GB -> 5GB
+	int small=0, medium=0, large=0, dlarge=0;
+	long smallS, mediumS, largeS;
+	smallS = sectorCount / 10000;	// 100GB -> 10mb 0.01%
+	mediumS = sectorCount / 100;	// 100GB -> 1GB		1%
+	largeS = sectorCount / 10;		// 100GB -> 10GB   10%
 
-	spaces = (FileSpace*) calloc(entries, sizeof(FileSpace));
+	spaces = (FileSpace*) calloc(entries+1, sizeof(FileSpace));
 	for(int i=0; i<entries; i++){
-		if(files[i].start > lastEnd){
+		if(files[sortedFiles[i]].start > lastEnd){
 			spaces[count].start = lastEnd;
-			spaces[count].end = files[i].start;
-			spaces[count].size = files[i].start - lastEnd;
+			spaces[count].end = files[sortedFiles[i]].start;
+			spaces[count].size = files[sortedFiles[i]].start - lastEnd;
 
 			if(spaces[count].size < smallS){ small++; }
 			else if(spaces[count].size < mediumS){ medium++; }
 			else if(spaces[count].size < largeS){ large++; }
-			else{ dlarge++; }
+			else{ dlarge++;	}
 
 			count++;
 			printf("Found %i empty spaces...\r", count);
 		}
-		lastEnd = files[i].end;
+		lastEnd = files[sortedFiles[i]].end;
 	}
 	if(lastEnd != sectorCount){
 		spaces[count].start = lastEnd;
@@ -321,4 +299,53 @@ string exec(string command){
     }
     pclose(pipe);
     return result;
+}
+int* sort(long* data, int*& sorted, int size, const char* cache){
+	if(!&sorted){ // If sorted is a nullptr
+		sorted = (int*)calloc(size, sizeof(int));
+		for (int i=0; i<size; i++){
+			sorted[i]=i;
+		}
+	}
+	if (fs::exists(replace(cacheLoc, "<>", cache))){
+		std::ifstream file(replace(cacheLoc, "<>", cache));
+		int i=0;
+		string line;
+  		while (std::getline(file, line)) {
+			sorted[i] = std::stoi(line);
+			i++;
+			printf("Sorted %i entries...\r", size);
+    	}
+		entries=i;
+		return sorted;
+	}
+	size--;
+	
+	while (size != 0){
+		printf("Sorting %i remaining \r", size);
+		int greatestInd = 0;
+		long greatest = data[0];
+
+		for (int i=0; i <= size; i++){
+			if(data[i] > greatest){
+				greatest = data[i];
+				greatestInd = i;
+			}
+		}
+		greatest = sorted[greatestInd];
+		sorted[greatestInd] = sorted[size];
+		sorted[size] = greatest;
+		data[greatestInd] = data[size];
+		
+		size--;
+	}
+
+	std::ofstream file(replace(cacheLoc, "<>", cache));
+	for(int i=0; i<entries; i++){
+		file << sorted[i] << "\n";
+	}
+	
+	file.close();
+	free(data);
+	return sorted;
 }
